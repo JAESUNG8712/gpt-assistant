@@ -633,6 +633,7 @@ button,a,[role=button]{touch-action:manipulation}
 <body>
 <div id="sidebar-overlay" onclick="closeSidebar()" aria-hidden="true"></div>
 <div id="app"></div>
+<script src="/payslip-calc.js"></script>
 <script>
 // ============================================================================
 // 목차 — 인사평가·인사·회계·ERP·전자결재 통합 시스템(HR/KPI/ERP SPA) 클라이언트
@@ -18335,39 +18336,14 @@ function downloadAttDetailCSV(empId){
 }
 
 // ==================== PAYSLIP (급여 명세서) ====================
-function _calcMonthlyWorkHours(empId,year,month){
-  // 일 소정근로시간 = (퇴근-출근) - 휴게 1시간 (근로기준법 기준 8시간 표준)
-  const stdDailyHours=Math.max(1,(settings.workEndHour||18)-(settings.workStartHour||9)-1);
-  const stdDailyMins=stdDailyHours*60;
-  const ym=`${year}-${String(month).padStart(2,"0")}`;
-  let regularMins=0,overtimeMins=0;
-  attendanceRecords.filter(r=>r.empId===empId&&r.date.startsWith(ym)&&r.checkIn&&r.checkOut).forEach(r=>{
-    const [ih,im]=r.checkIn.split(":").map(Number);
-    const [oh,om]=r.checkOut.split(":").map(Number);
-    let mins=(oh*60+om)-(ih*60+im)-60; // 휴게 1시간 차감
-    if(mins<=0)return;
-    regularMins+=Math.min(mins,stdDailyMins);
-    overtimeMins+=Math.max(0,mins-stdDailyMins);
-  });
-  return{stdDailyHours,regularHours:Math.round(regularMins/60*10)/10,overtimeHours:Math.round(overtimeMins/60*10)/10};
+// 급여 계산 본체는 public/payslip-calc.js(서버와 공유)에 있다. 여기서는 현재 화면 상태를 넘기는 얇은 래퍼만 둔다.
+function _payslipCtx(){
+  return{settings,payrollAdjustments,attendanceRecords,
+    overtimeRequests:typeof overtimeRequests!=="undefined"?overtimeRequests:[],
+    wageGarnishments:typeof wageGarnishments!=="undefined"?wageGarnishments:[]};
 }
-const EXECUTIVE_RANKS=["상무","전무","부사장","사장","위원","상근감사"];
-function isExecutiveRank(rank){return EXECUTIVE_RANKS.includes(rank);}
-function _payItemApplies(ci,emp,year,month){
-  if(!ci||ci.enabled===false)return false;
-  const ym=`${year}-${String(month).padStart(2,"0")}`;
-  if(ci.startMonth&&ym<ci.startMonth)return false;
-  if(ci.endMonth&&ym>ci.endMonth)return false;
-  const targetType=ci.targetType||"all",targetValue=String(ci.targetValue||"");
-  if(targetType==="dept")return !!targetValue&&String(emp.dept||"")===targetValue;
-  if(targetType==="team")return !!targetValue&&String(emp.team||"")===targetValue;
-  if(targetType==="rank")return !!targetValue&&String(emp.rank||"")===targetValue;
-  return targetType==="all";
-}
-function _calcPayItemAmount(ci,monthly){
-  const raw=ci.calcType==="monthlyRate"?monthly*(Number(ci.rate)||0)/100:Number(ci.amount)||0;
-  return Math.max(0,Math.round(raw));
-}
+function _calcMonthlyWorkHours(empId,year,month){return PayslipCalc.calcMonthlyWorkHours(empId,year,month,_payslipCtx());}
+function calcStandardPayslip(emp,year,month){return PayslipCalc.calcStandardPayslip(emp,year,month,_payslipCtx());}
 function _buildPayrollAdjustment(input={},existing=null){
   const empId=input.empId??existing?.empId,year=Number(input.year??existing?.year),month=Number(input.month??existing?.month),amount=Number(input.amount??existing?.amount),category=String(input.category??existing?.category??"").trim(),note=String(input.note??existing?.note??"").trim();
   if(String(empId??"").trim()==="")return{record:null,error:"급여 조정 대상 직원이 필요합니다."};
@@ -18378,105 +18354,6 @@ function _buildPayrollAdjustment(input={},existing=null){
   if(note.length>500)return{record:null,error:"급여 조정 비고는 500자 이하로 입력하세요."};
   const now=new Date().toISOString(),source=String(input.source??existing?.source??"manual").trim()||"manual";
   return{record:{...(existing||{}),...input,id:input.id||existing?.id||`payadj-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,empId,year,month,category,amount:Math.round(amount),note,source,taxable:input.taxable??existing?.taxable??true,createdAt:existing?.createdAt||input.createdAt||now,updatedAt:now},error:""};
-}
-// D4(호봉제) — settings.payBasisMode==="step"일 때만 직급×직급연차 기준 월 기본급표에서
-// 값을 찾는다. 표가 없거나 해당 직급 행이 비어있으면 연봉제와 동일한 계산으로 안전하게
-// 폴백(설정 미비로 급여가 0원이 되는 사고를 방지). 호봉이 표의 길이를 넘으면 마지막
-// 호봉 금액을 그대로 적용(실제 호봉제의 "호봉 상한" 관례와 동일).
-function _stepMonthlyBase(emp){
-  const steps=(settings.salaryStepTable||{})[emp.rank];
-  if(!Array.isArray(steps)||!steps.length)return Math.round((emp.salary||0)/12);
-  const idx=Math.min(Math.max(1,Math.round(emp.rankYear||1)),steps.length)-1;
-  return Number(steps[idx])||0;
-}
-function calcStandardPayslip(emp,year,month){
-  const meal=200000;
-  const transportIncluded=100000; // 교통비는 별도 구분 없이 기본급에 포함
-  const isResearchAllowTarget=emp.dept==="R&BD센터"&&emp.position!=="센터장";
-  const researchAllow=isResearchAllowTarget?200000:0;
-  // 연구수당은 현재 연봉 범위 내에서 비과세 항목으로 분리 지급되므로 기본급에서 차감
-  const monthlyBase=settings.payBasisMode==="step"?_stepMonthlyBase(emp):Math.round((emp.salary||0)/12);
-  const monthly=monthlyBase-researchAllow+transportIncluded;
-  const posAllow=emp.position==="팀장"?500000:0;
-  const isExecutive=isExecutiveRank(emp.rank);
-  // 회사별 계산식·대상·적용기간을 통과한 항목만 반영한다. 구버전 항목은 고정액/전체
-  // 대상으로 해석해 기존 데이터와 계산 결과를 유지한다.
-  const customItems=(settings.customPayItems||[]).filter(ci=>_payItemApplies(ci,emp,year,month))
-    .slice().sort((a,b)=>(Number(a.order)||999)-(Number(b.order)||999));
-  const customPayItemsList=customItems.filter(ci=>ci.type==="pay").map(ci=>({label:ci.name,amount:_calcPayItemAmount(ci,monthly),taxable:ci.taxable!==false,sourceId:ci.id}));
-  const customDeductItemsList=customItems.filter(ci=>ci.type==="deduct").map(ci=>({label:ci.name,amount:_calcPayItemAmount(ci,monthly),sourceId:ci.id}));
-  const customPay=customPayItemsList.reduce((s,ci)=>s+ci.amount,0);
-  const customDeduct=customDeductItemsList.reduce((s,ci)=>s+ci.amount,0);
-  // 직원별 급여 조정 항목(경조사비/인센티브/추가금액) — 급여 관리 메뉴에서 입력
-  const empAdjustments=payrollAdjustments.filter(a=>String(a.empId)===String(emp.id)&&a.year===year&&a.month===month);
-  const adjustmentPayItemsList=empAdjustments.filter(a=>Number(a.amount)>0).map(a=>({label:a.category||"급여 조정",amount:Number(a.amount)||0,taxable:a.taxable!==false,sourceId:a.id,source:a.source||"manual",note:a.note||""}));
-  const adjustmentDeductItemsList=empAdjustments.filter(a=>Number(a.amount)<0).map(a=>({label:a.category||"급여 공제",amount:Math.abs(Number(a.amount)||0),sourceId:a.id,source:a.source||"manual",note:a.note||""}));
-  const adjustPay=adjustmentPayItemsList.reduce((s,a)=>s+a.amount,0),adjustDeduct=adjustmentDeductItemsList.reduce((s,a)=>s+a.amount,0);
-  // 시급 및 연장근무 계산 (월 소정근로시간 209시간 기준, 근로기준법) — 임원(상무 이상)은 연장근로수당 미지급
-  const standardMonthlyHours=209;
-  const hourlyWage=Math.round(monthly/standardMonthlyHours);
-  const overtimeHourlyWage=Math.round(hourlyWage*1.5);
-  const {stdDailyHours,regularHours,overtimeHours:rawOvertimeHours}=_calcMonthlyWorkHours(emp.id,year,month);
-  const overtimeHours=isExecutive?0:rawOvertimeHours;
-  const overtimeAllowance=isExecutive?0:Math.round(overtimeHours*overtimeHourlyWage);
-  // 승인된 초과근무 신청(연장 1.5/야간 2.0/휴일 1.5배) — 초과근무 신청 메뉴에서 승인된 건만 반영
-  const monthPrefix=`${year}-${String(month).padStart(2,"0")}`;
-  const otReqs=isExecutive?[]:(typeof overtimeRequests!=="undefined"?overtimeRequests:[]).filter(r=>String(r.empId)===String(emp.id)&&r.status==="approved"&&String(r.date||"").startsWith(monthPrefix));
-  const otReqHours=otReqs.reduce((s,r)=>s+(r.hours||0),0);
-  const otReqAllowance=Math.round(otReqs.reduce((s,r)=>s+(r.hours||0)*hourlyWage*(OT_TYPE_MULT[r.type]||1.5),0));
-  const transport=0;
-  const gross=monthly+meal+researchAllow+posAllow+customPay+overtimeAllowance+otReqAllowance+adjustPay;
-  // 지급 항목 상세 분류 (식대·연구수당은 비과세, 그 외는 과세 — 과세 항목 합계가 4대보험·소득세 산정 기준이 됨)
-  const payItems=[
-    {label:"기본급",amount:monthly,taxable:true},
-    ...(overtimeAllowance>0?[{label:`연장근로수당(${overtimeHours}h)`,amount:overtimeAllowance,taxable:true}]:[]),
-    ...(otReqAllowance>0?[{label:`초과근무수당(신청 ${otReqHours}h)`,amount:otReqAllowance,taxable:true}]:[]),
-    {label:"식대",amount:meal,taxable:false},
-    ...(researchAllow>0?[{label:"연구수당",amount:researchAllow,taxable:false}]:[]),
-    ...(posAllow>0?[{label:"직책수당",amount:posAllow,taxable:true}]:[]),
-    ...customPayItemsList.filter(ci=>ci.amount>0),
-    ...adjustmentPayItemsList,
-  ];
-  const taxableIncome=payItems.filter(it=>it.taxable).reduce((s,it)=>s+it.amount,0);
-  const pension=Math.round(taxableIncome*0.045);
-  const health=Math.round(taxableIncome*0.03545);
-  const care=Math.round(taxableIncome*0.00453);
-  const employ=Math.round(taxableIncome*0.009);
-  let tax=0;
-  if(taxableIncome>=8000000)tax=Math.round(taxableIncome*0.24);
-  else if(taxableIncome>=5000000)tax=Math.round(taxableIncome*0.15);
-  else if(taxableIncome>=3000000)tax=Math.round(taxableIncome*0.06);
-  else tax=Math.round(taxableIncome*0.02);
-  const localTax=Math.round(tax*0.1);
-  const baseTotalDeduct=pension+health+care+employ+tax+localTax+customDeduct+adjustDeduct;
-  // D4(급여압류등록) — 활성 압류명령만 반영. 민사집행법상 압류금지 최저생계비 등 법정
-  // 세부규정은 반영하지 않는 참고용 계산이며, 화면에도 안내 문구로 명시한다.
-  const monthKey=`${year}-${String(month).padStart(2,"0")}`;
-  const activeGarnishments=(typeof wageGarnishments!=="undefined"?wageGarnishments:[]).filter(g=>String(g.empId)===String(emp.id)&&g.status!=="canceled"&&g.status!=="completed"&&(!g.startMonth||monthKey>=g.startMonth)&&(!g.endMonth||monthKey<=g.endMonth));
-  const preGarnishNet=gross-baseTotalDeduct;
-  const garnishDeductItemsList=activeGarnishments.map(g=>({label:`급여압류(${g.caseNumber||g.creditor||"법원명령"})`,amount:g.type==="percentOfNet"?Math.max(0,Math.round(preGarnishNet*(Number(g.rate)||0)/100)):Math.max(0,Math.round(Number(g.amount)||0)),sourceId:g.id}));
-  const garnishDeduct=garnishDeductItemsList.reduce((s,gi)=>s+gi.amount,0);
-  const totalDeduct=baseTotalDeduct+garnishDeduct;
-  const deductItems=[
-    {label:"국민연금 (4.5%)",amount:pension},
-    {label:"건강보험 (3.545%)",amount:health},
-    {label:"장기요양보험 (0.453%)",amount:care},
-    {label:"고용보험 (0.9%)",amount:employ},
-    {label:"소득세",amount:tax},
-    {label:"지방소득세(주민세) (10%)",amount:localTax},
-    ...customDeductItemsList.filter(ci=>ci.amount>0),
-    ...adjustmentDeductItemsList,
-    ...garnishDeductItemsList,
-  ];
-  // id is deterministic (emp+year+month, matching the uniqueness the callers
-  // already enforce via findIndex/find on those 3 fields) — payslips is a
-  // server-side ID_KEYED_LIST_FIELD (merged by `id`); a record with no id is
-  // silently dropped by that merge instead of being kept (see _setAttRec for
-  // the same bug/fix on attendanceRecords).
-  return{id:`payslip-${emp.id}-${year}-${month}`,empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustDeduct,garnishDeduct,adjustItems:empAdjustments,
-    payItems,deductItems,taxableIncome,
-    standardMonthlyHours,hourlyWage,overtimeHourlyWage,stdDailyHours,regularHours,overtimeHours,overtimeAllowance,
-    pension,health,care,employ,tax,localTax,totalDeduct,netPay:gross-totalDeduct,confirmed:false,confirmedAt:null,updatedAt:new Date().toISOString()};
 }
 function _ensurePayslipHourFields(slip,emp){
   if(!slip||!emp)return slip;
@@ -18496,7 +18373,7 @@ function renderPayslipPage(){
   const myHistory=payslips.filter(p=>p.empId===uid).sort((a,b)=>b.year-a.year||b.month-a.month);
   c.innerHTML=`<div class="card" style="margin-bottom:12px"><div class="card-head"><h3>💰 ${year}년 ${month}월 급여 명세서 ${slip?(slip.confirmed?'<span class="badge bg-green" style="margin-left:6px">확정</span>':'<span class="badge bg-gray" style="margin-left:6px">확정 대기</span>'):""}</h3>
     <div style="display:flex;gap:6px">
-    ${slip?`<button class="btn btn-secondary btn-sm" onclick="printPayslip('${uid}',${year},${month})">🖨 인쇄/저장</button>`:""}
+    ${slip?`<button class="btn btn-secondary btn-sm" onclick="printPayslip('${uid}',${year},${month})">🖨 인쇄/저장</button><button class="btn btn-secondary btn-sm" onclick="downloadPayslipPdf('${uid}',${year},${month})">📄 PDF</button>`:""}
     ${isAdmin?`<button class="btn btn-primary btn-sm" onclick="openAdminPayslipMgmt()">급여 관리</button>`:""}
     </div>
   </div><div class="card-body">
@@ -18547,7 +18424,7 @@ function renderPayslipPage(){
   ${myHistory.length>0?`<div class="card mb3"><div class="card-head"><h3>급여 이력</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>연월</th><th>지급 합계</th><th>공제 합계</th><th>실수령액</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${myHistory.slice(0,24).map(p=>`<tr><td>${p.year}년 ${p.month}월</td><td>${fmtSalary(p.gross)}</td><td style="color:#ef4444">${fmtSalary(p.totalDeduct)}</td><td style="font-weight:700;color:#1e40af">${fmtSalary(p.netPay)}</td>
   <td>${p.confirmed?'<span class="badge bg-green">확정</span>':'<span class="badge bg-gray">확정 대기</span>'}</td>
-  <td><button class="btn btn-secondary btn-sm" onclick="printPayslip('${p.empId}',${p.year},${p.month})">🖨 인쇄</button></td></tr>`).join("")}
+  <td><button class="btn btn-secondary btn-sm" onclick="printPayslip('${p.empId}',${p.year},${p.month})">🖨 인쇄</button><button class="btn btn-secondary btn-sm" onclick="downloadPayslipPdf('${p.empId}',${p.year},${p.month})">📄 PDF</button></td></tr>`).join("")}
   </tbody></table></div></div></div>`:""}
   ${isAdmin?renderAdminPayslipSection(year,month):""}`;
 }
@@ -18568,7 +18445,7 @@ function renderAdminPayslipSection(year,month){
       <td>${slip?fmtSalary(slip.netPay):"-"}</td>
       <td>${slip?(slip.confirmed?`<span class="badge bg-green">확정</span>`:'<span class="badge bg-gray">확정 대기</span>'):'<span class="badge bg-red">미생성</span>'}</td>
       <td style="text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
-        ${slip?`<button class="btn btn-secondary btn-sm" onclick="printPayslip('${emp.id}',${year},${month})">인쇄</button>`:""}
+        ${slip?`<button class="btn btn-secondary btn-sm" onclick="printPayslip('${emp.id}',${year},${month})">인쇄</button><button class="btn btn-secondary btn-sm" onclick="downloadPayslipPdf('${emp.id}',${year},${month})">📄 PDF</button>`:""}
         ${slip&&!slip.confirmed?`<button class="btn btn-primary btn-sm" onclick="confirmPayslip('${emp.id}',${year},${month})">확정</button>`:""}
       </td></tr>`;
   }).join("");
@@ -18629,7 +18506,7 @@ function openAdminPayslipDetail(empId,year,month){
       <div style="font-size:24px;font-weight:800;color:#1e40af">${fmtSalary(slip.netPay)}</div>
     </div>
   </div><div class="modal-foot">
-    <button class="btn btn-secondary" onclick="printPayslip('${empId}',${year},${month})">🖨 인쇄</button>
+    <button class="btn btn-secondary" onclick="printPayslip('${empId}',${year},${month})">🖨 인쇄</button><button class="btn btn-secondary btn-sm" onclick="downloadPayslipPdf('${empId}',${year},${month})">📄 PDF</button>
     ${!slip.confirmed?`<button class="btn btn-primary" onclick="confirmPayslip('${empId}',${year},${month});closeModal()">확정</button>`:""}
     <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
   </div></div>`);
@@ -19122,6 +18999,26 @@ async function exportPayrollMgmtCSV(){
     return[emp.name,emp.empNo||"",emp.dept||"",emp.team||"",emp.salary||0,slip.gross,slip.monthly,slip.overtimeAllowance||0,slip.meal,slip.researchAllow||0,slip.posAllow||0,slip.customPay||0,slip.adjustPay||0,slip.totalDeduct,slip.netPay];
   });
   await dlCSV(`급여종합관리_${year}년${month}월.csv`,headers,rows);
+}
+// 급여 명세서 PDF 내려받기 — 서버가 계산(또는 저장된 확정본)으로 PDF를 만든다.
+// 인증 토큰이 필요하므로 일반 <a href>가 아니라 fetch 후 Blob으로 저장한다.
+async function downloadPayslipPdf(empId,year,month){
+  if(!serverConfig.url&&!_isServerUrlLocked()){showToast("서버에 연결된 상태에서만 PDF를 받을 수 있습니다.","error");return;}
+  try{
+    const qs=`empId=${encodeURIComponent(empId)}&year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`;
+    const res=await fetch(`${_serverBase()}/api/payroll/payslip.pdf?${qs}`,{headers:_authToken?{Authorization:"Bearer "+_authToken}:{}});
+    if(!res.ok){
+      let msg="급여명세서 PDF를 만들지 못했습니다.";
+      try{msg=(await res.json()).message||msg;}catch{}
+      showToast(msg,"error");return;
+    }
+    // 다운로드 파일명은 ASCII로만 쓴다(일부 브라우저는 download 속성의 비ASCII 이름을 버린다).
+    // 한글 파일명은 서버의 Content-Disposition에 그대로 있다.
+    const name=`payslip_${year}-${String(month).padStart(2,"0")}_${String(empId).replace(/[^A-Za-z0-9_-]/g,"")||"emp"}.pdf`;
+    const url=URL.createObjectURL(await res.blob());
+    const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(e){showToast("PDF 다운로드 중 연결 오류가 발생했습니다.","error");}
 }
 function printPayslip(empId,year,month){
   const emp=getEmp(empId);if(!emp){showToast("직원 정보를 찾을 수 없습니다.","error");return;}
@@ -23703,7 +23600,6 @@ function renderExecDashboardPage(){
   </div>`;
 }
 // ==================== 초과근무 신청·승인 (연장/야간/휴일 → 급여 수당 자동 연동) ====================
-const OT_TYPE_MULT={"연장":1.5,"야간":2.0,"휴일":1.5}; // 통상시급 대비 가산율
 const OT_STATUS_LABEL={pending:badge("승인 대기","gray"),approved:badge("승인됨","green"),rejected:badge("반려","red")};
 function _otCanApprove(r){
   if(!currentUser)return false;

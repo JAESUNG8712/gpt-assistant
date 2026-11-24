@@ -22,6 +22,8 @@ const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
 const { computeStockValuation, computeLocationValuation } = require("./lib/stock-valuation");
 const mailer = require("./lib/mailer");
+const PayslipCalc = require("./public/payslip-calc.js");
+const { renderPayslipPdf } = require("./lib/payslip-pdf");
 const { retryDelays, nextOutboxState, SENDING_LEASE_MS, ownsOutboxClaim } = require("./lib/webhook-outbox");
 const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD, capSnapshot, EMPLOYEE_AUTH_FIELDS } = require("./lib/record-revisions");
 
@@ -5410,6 +5412,56 @@ app.get("/readyz", async (req, res) => {
 });
 
 // GET /data
+// 급여 명세서 PDF — 서버가 같은 계산식(public/payslip-calc.js)으로 금액을 만들어 PDF를 낸다.
+// 본인 명세서는 메뉴 권한 "payslip", 타인 명세서는 관리자 + "payroll-mgmt"만 받을 수 있다.
+// 저장된 명세서(확정 등)가 있으면 그 값을, 없으면 현재 설정·근태·수당으로 계산한 값을 쓴다.
+app.get("/api/payroll/payslip.pdf", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  const year = Number(req.query.year), month = Number(req.query.month);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
+    return res.status(400).json({ ok: false, message: "연도와 월을 확인해주세요." });
+  }
+  const empId = req.query.empId != null && req.query.empId !== "" ? String(req.query.empId) : String(req.auth.empId ?? "");
+  if (!empId) return res.status(400).json({ ok: false, message: "직원을 지정해주세요." });
+  const isSelf = req.auth.empId != null && String(req.auth.empId) === empId;
+  if (isSelf) {
+    if (!requirePage(req, res, "payslip")) return;
+  } else {
+    if (req.auth.role !== "admin") return res.status(403).json({ ok: false, message: "본인 명세서만 조회할 수 있습니다." });
+    if (!requirePage(req, res, "payroll-mgmt")) return;
+  }
+  try {
+    const data = await loadData(req.auth.companyId || null);
+    const emp = (data.employees || []).find(e => String(e.id) === empId);
+    if (!emp) return res.status(404).json({ ok: false, message: "직원 정보를 찾을 수 없습니다." });
+    const ctx = {
+      settings: data.settings || {},
+      payrollAdjustments: data.payrollAdjustments || [],
+      overtimeRequests: data.overtimeRequests || [],
+      wageGarnishments: data.wageGarnishments || [],
+      attendanceRecords: data.attendanceRecords || [],
+    };
+    const fresh = PayslipCalc.calcStandardPayslip(emp, year, month, ctx);
+    let slip = (data.payslips || []).find(p => String(p.empId) === empId && p.year === year && p.month === month);
+    if (!slip) slip = fresh;
+    else if (slip.hourlyWage == null) {
+      // 근무시간 필드가 없는 예전 저장본은 계산값으로 보충한다(클라이언트 _ensurePayslipHourFields와 동일).
+      slip = { ...slip, standardMonthlyHours: fresh.standardMonthlyHours, hourlyWage: fresh.hourlyWage, overtimeHourlyWage: fresh.overtimeHourlyWage,
+        stdDailyHours: fresh.stdDailyHours, regularHours: fresh.regularHours, overtimeHours: fresh.overtimeHours, overtimeAllowance: fresh.overtimeAllowance };
+    }
+    const pdf = await renderPayslipPdf({ slip, emp, companyName: (data.settings || {}).companyName || "" });
+    const safeName = String(emp.name || "직원").replace(/[\\/:*?"<>|\r\n]/g, "_");
+    const filename = `급여명세서_${safeName}_${year}-${String(month).padStart(2, "0")}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader("Cache-Control", "no-store");
+    res.send(pdf);
+  } catch (e) {
+    console.error("[payslip-pdf]", e);
+    res.status(500).json({ ok: false, message: "급여명세서 PDF를 만들지 못했습니다." });
+  }
+});
+
 app.get("/data", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {

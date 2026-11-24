@@ -1,8 +1,7 @@
 // settings.payBasisMode("annual"|"step")/settings.salaryStepTable({직급:[호봉별 월 기본급,...]})
-// — 직급×직급연차 기준 급여 지급방식(호봉제, D4 라운드)을 정하는 설정값. 이 둘은 완전히
-// 클라이언트 전용 계산(_stepMonthlyBase()/calcStandardPayslip(), public/index.html)에만
-// 쓰이고 server.js에는 필드명 참조가 0건이다 — 즉 서버에는 "이 두 필드가 존재한다"는 인식
-// 자체가 없고, settings(SINGLETON_FIELDS)에 대한 유일한 서버측 방어선은
+// — 직급×직급연차 기준 급여 지급방식(호봉제, D4 라운드)을 정하는 설정값. 급여 계산식은
+// public/payslip-calc.js(브라우저·서버 공용)에 있고, 서버는 PDF 명세서 생성 시 이 값을 읽는다.
+// settings(SINGLETON_FIELDS)에 대한 서버측 방어선은
 // preserveServerOwnedStateForNonAdmin()의 "non-admin이 보낸 settings는 통째로 저장본으로
 // 되돌린다" allow-list 모델뿐이다(이 코드베이스의 어떤 singleton 필드도 필드별 값 검증을
 // 받지 않는 것이 일관된 기존 아키텍처 — _validateFieldValues()는 GENERIC_LIST_FIELDS의
