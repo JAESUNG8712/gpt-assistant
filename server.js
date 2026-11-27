@@ -711,6 +711,8 @@ function filterDataForRole(data, auth) {
   // 근로계약은 본인 계약 중 발송된 것(작성중 제외)만 보인다. 관리자는 전체.
   // 퇴직 면담은 관리자만 본다(퇴직 사유·불만 등 민감 기록).
   if (auth.role !== "admin" && Array.isArray(out.exitInterviews)) out.exitInterviews = [];
+  // 연차 촉진 안내 발송 기록은 관리자만 본다(서버가 직접 쓰는 기록, 클라이언트는 쓰지 않는다).
+  if (auth.role !== "admin" && Array.isArray(out.leavePromotionNotices)) out.leavePromotionNotices = [];
   if (auth.role !== "admin" && Array.isArray(out.laborContracts)) {
     out.laborContracts = out.laborContracts.filter(c => c && String(c.empId) === myId && c.status !== "draft");
   }
@@ -1735,6 +1737,7 @@ const _WRITE_GATED_FIELDS = {
   laborContracts: { roles: ["admin"], pageIds: ["labor-contracts", "my-contracts"], ownField: "empId" },
   // 퇴직 면담 — 퇴직 사유·불만 등 민감한 면담 기록. 관리자 전용(조회도 filterDataForRole에서 차단).
   exitInterviews: { roles: ["admin"], pageIds: "exit-interviews" },
+  leavePromotionNotices: { roles: ["admin"], pageIds: "leave-mgmt" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -2740,6 +2743,13 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.signatureData) {
       if (typeof rec.signatureData !== "string" || rec.signatureData.length > 150000 || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(rec.signatureData)) return false;
     }
+  } else if (field === "leavePromotionNotices") {
+    // 발송 기록: 연도·차수(1 또는 2)·직원 id·발송 시각이 모두 맞아야 한다.
+    const yr = Number(rec.year);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (![1, 2].includes(Number(rec.round))) return false;
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (typeof rec.sentAt !== "string" || Number.isNaN(Date.parse(rec.sentAt))) return false;
   } else if (field === "exitInterviews") {
     if (String(rec.empId ?? "").trim() === "") return false;
     if (!["scheduled", "done"].includes(rec.status)) return false;
@@ -7827,6 +7837,98 @@ async function _runHrScheduler() {
       catch (e) { console.warn("[hr-scheduler] 예약발령 반영 실패:", e.message); }
     }
   } finally { _hrSchedulerRunning = false; }
+  return total;
+}
+// 연차 사용촉진 안내 메일(근로기준법 제61조 통보 기간: 1차 7/1~7/10, 2차 11/1~11/10).
+// 회사가 설정(settings.leavePromotionMail.enabled)으로 켠 경우에만, 통보 기간 중 잔여 연차가 남은
+// 재직자에게 SMTP로 한 번씩 보낸다. 발송한 사람은 leavePromotionNotices에 기록해 같은 연도·차수에
+// 다시 보내지 않는다(보내기 실패 시 기록하지 않아 다음 주기에 재시도). 메일 서버가 없으면 아무것도 하지 않는다.
+const LEAVE_PROMOTION_MAX_PER_RUN = 300;
+function _leavePromotionToday() {
+  // 테스트 전용 날짜 고정(운영 환경에서는 무시한다).
+  const forced = process.env.NODE_ENV !== "production" ? process.env.LEAVE_PROMOTION_TEST_DATE : "";
+  if (forced && /^\d{4}-\d{2}-\d{2}$/.test(forced)) return forced;
+  return _kstToday();
+}
+function _leavePromotionMailText(t) {
+  const round = t.round === 1 ? "1차(7월)" : "2차(11월)";
+  const link = process.env.APP_BASE_URL ? `\n\n접속 주소: ${process.env.APP_BASE_URL}` : "";
+  return `${t.name || "직원"}님, ${t.year}년도 미사용 연차가 ${t.remain}일 남아 있습니다.\n` +
+    `근로기준법 제61조에 따른 연차 사용촉진 ${round} 통보 기간입니다. 시스템의 "연차 관리" 화면에서 ` +
+    `사용 계획을 세워 주세요. 미사용 연차는 연말에 소멸될 수 있습니다.${link}\n\n※ 본 메일은 자동 발송되었습니다.`;
+}
+async function _sendLeavePromotionForCompany(companyId) {
+  const { promotionWindow, computeLeavePromotionTargets } = require("./lib/leave-promotion");
+  const today = _leavePromotionToday();
+  if (!promotionWindow(today)) return 0;
+  if (!mailer.getMailConfig().configured) return 0;
+  const stored = await loadData(companyId);
+  if (stored.settings?.leavePromotionMail?.enabled !== true) return 0;
+  const sent = new Set((stored.leavePromotionNotices || []).map(n => n.id));
+  const targets = computeLeavePromotionTargets(stored.employees || [], stored.approvalDocs || [], today)
+    .filter(t => !sent.has(t.noticeId) && mailer.isValidEmail(t.email))
+    .slice(0, LEAVE_PROMOTION_MAX_PER_RUN);
+  if (!targets.length) return 0;
+  const notices = [];
+  let consecutiveFailures = 0;
+  for (const t of targets) {
+    try {
+      const year = t.year;
+      await mailer.sendMail({
+        to: t.email,
+        subject: `[HR 시스템] 연차 사용촉진 ${t.round === 1 ? "1차" : "2차"} 안내 (${year}년 잔여 ${t.remain}일)`,
+        text: _leavePromotionMailText(t),
+      });
+      notices.push({ id: t.noticeId, year, round: t.round, empId: t.empId, remain: t.remain, sentAt: new Date().toISOString() });
+      consecutiveFailures = 0;
+    } catch (e) {
+      consecutiveFailures++;
+      console.warn("[leave-promotion] 메일 발송 실패:", e.message);
+      // 메일 서버 장애로 보이면(연속 3건 실패) 이번 주기는 중단한다 — 나머지는 다음 주기에 재시도.
+      if (consecutiveFailures >= 3) break;
+    }
+  }
+  if (!notices.length) return 0;
+  const actor = { role: "admin", empId: null };
+  await _withSaveLock(() => _withDistributedSaveLock(companyId, async client => {
+    if (client) {
+      await client.query("BEGIN");
+      try {
+        const eligible = await client.query("SELECT id FROM companies WHERE id = $1 AND status <> 'suspended' FOR SHARE", [companyId]);
+        if (!eligible.rowCount) { await client.query("ROLLBACK"); return; }
+        await _persistDataLocked({ leavePromotionNotices: notices }, "system:leave-promotion", companyId, actor, client);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } else {
+      await _persistDataLocked({ leavePromotionNotices: notices }, "system:leave-promotion", companyId, actor);
+    }
+  }));
+  return notices.length;
+}
+let _leavePromotionRunning = false;
+async function _runLeavePromotionNotices() {
+  if (_leavePromotionRunning) return 0;
+  if (!require("./lib/leave-promotion").promotionWindow(_leavePromotionToday())) return 0;
+  _leavePromotionRunning = true;
+  let total = 0;
+  try {
+    const companyIds = USE_JSON_FILE ? [null]
+      // 메일 설정을 켠 회사만 대상으로 한다(정지된 회사는 제외). 통보 기간이 아닐 때는 위에서 바로 끝난다.
+      : (await pool.query(
+          `SELECT c.id FROM companies c
+            WHERE c.status <> 'suspended'
+              AND EXISTS (SELECT 1 FROM app_singletons s
+                           WHERE s.company_id = c.id AND s.key = 'settings'
+                             AND s.data->'leavePromotionMail'->>'enabled' = 'true')`
+        )).rows.map(r => r.id);
+    for (const companyId of companyIds) {
+      try { total += await _sendLeavePromotionForCompany(companyId); }
+      catch (e) { console.warn("[leave-promotion] 연차 촉진 메일 처리 실패:", e.message); }
+    }
+  } finally { _leavePromotionRunning = false; }
   return total;
 }
 async function _processWebhookOutbox() {
@@ -15753,6 +15855,7 @@ initDB()
     // 예약발령 워커: 발령일이 도래한 예약 인사발령을 접속자 없이도 반영한다.
     setTimeout(() => { _runHrScheduler().catch(() => {}); }, 5000).unref();
     setInterval(() => { _runHrScheduler().catch(() => {}); }, HR_SCHEDULER_POLL_MS).unref();
+    setInterval(() => { _runLeavePromotionNotices().catch(() => {}); }, HR_SCHEDULER_POLL_MS).unref();
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
         console.error(`\n[오류] 포트 ${PORT}가 이미 사용 중입니다.`);

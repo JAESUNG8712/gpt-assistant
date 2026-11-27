@@ -28386,6 +28386,23 @@ function applyLeavePlanItem(startDate,endDate){
     _onVacationTypeChange();_calcVacationDays();
   },50);
 }
+// 연차 사용촉진 안내 메일 자동 발송 설정(관리자). 서버 스케줄러가 통보 기간(1차 7/1~7/10,
+// 2차 11/1~11/10) 중에만, 잔여 연차가 남은 재직자에게 SMTP로 한 번씩 보낸다.
+function renderLeavePromoMailCard(){
+  const on=settings.leavePromotionMail?.enabled===true;
+  return`<div class="card" style="margin-bottom:12px"><div class="card-body" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div style="flex:1;min-width:220px"><div class="fw7">📧 연차 사용촉진 안내 메일 자동 발송</div>
+    <div class="fz12 text-gray" style="margin-top:4px">1차(7/1~7/10), 2차(11/1~11/10) 통보 기간에 잔여 연차가 남은 재직자에게 안내 메일을 한 번씩 보냅니다. 메일 서버(SMTP) 설정이 필요합니다.</div></div>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" ${on?"checked":""} onchange="setLeavePromoMail(this.checked)"> <span class="fw7">${on?"사용 중":"사용 안 함"}</span></label>
+  </div></div>`;
+}
+async function setLeavePromoMail(enabled){
+  settings.leavePromotionMail={...(settings.leavePromotionMail||{}),enabled:!!enabled};
+  const r=await _doSave(true).catch(()=>null);
+  const saved=["saved","merged","partial","queued"].includes(r?.status);
+  showToast(saved?(enabled?"연차 촉진 안내 메일을 켰습니다.":"연차 촉진 안내 메일을 껐습니다."):"설정 저장에 실패했습니다. 다시 시도해주세요.",saved?"success":"error");
+  renderLeaveManagementPage();
+}
 function renderLeaveManagementPage(){
   const c=$("#content");
   const isLeader=currentUser.role==="leader";
@@ -28412,7 +28429,8 @@ function renderLeaveManagementPage(){
     <span style="font-size:20px">📝</span><div style="flex:1"><div style="font-size:12px;font-weight:700;color:#b45309">${planRoundNow===1?"1차(7월)":"2차(10월)"} 연차 사용계획서 작성 안내</div><div style="font-size:11px;color:#475569;margin-top:2px">잔여 연차 ${remain}일에 대한 사용계획서를 아직 제출하지 않았습니다. 연차 사용촉진제도에 따라 계획서를 작성해 주세요.</div></div>
     <button class="btn btn-sm" style="background:#b45309;color:white;border:none;font-size:11px" onclick="openLeavePlanModal(${planRoundNow})">계획서 작성</button>
   </div>`:""
-  c.innerHTML=`${leavePrmBanner}${leavePlanBanner}${renderLeavePlanSection(uid)}<div class="card" style="margin-bottom:12px"><div class="card-head"><h3>🌴 내 연차 현황</h3>
+  const leavePromoMailCard=currentUser.role==="admin"?renderLeavePromoMailCard():"";
+  c.innerHTML=`${leavePromoMailCard}${leavePrmBanner}${leavePlanBanner}${renderLeavePlanSection(uid)}<div class="card" style="margin-bottom:12px"><div class="card-head"><h3>🌴 내 연차 현황</h3>
     <button class="btn btn-primary btn-sm" onclick="openApprovalForm('tpl-vacation')">연차 신청</button>
   </div><div class="card-body">
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
