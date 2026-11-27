@@ -8450,7 +8450,7 @@ app.get("/backups", async (req, res) => {
 // POST /backups/create — create a full-DB snapshot for the current year
 app.post("/backups/create", async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { label = "수동 스냅샷", type = "manual" } = req.body || {};
+  const { label = "수동 스냅샷" } = req.body || {};
   const year = parseInt(req.body.year || new Date().getFullYear());
   const companyId = req.auth.companyId || null;
   try {
@@ -8600,7 +8600,7 @@ app.post("/restore", async (req, res) => {
     }
 
     const current = await loadData(companyId);
-    const { dataToPersist, restoredFields, extrasByField, restoreBudget } = buildRestorePlan(snapshotData, current, fields, deleteExtras);
+    const { dataToPersist, restoredFields, restoreBudget } = buildRestorePlan(snapshotData, current, fields, deleteExtras);
     // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다.
     rejectDemoDataForProduction(dataToPersist);
 
@@ -11378,7 +11378,6 @@ app.post("/api/erp/items", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-items")) return;
-    const companyId = req.auth.companyId || null;
     const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, leadTimeDays = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
     const itemId = id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -11420,7 +11419,6 @@ app.post("/api/erp/locations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-locations")) return;
-    const companyId = req.auth.companyId || null;
     const { id, name, address, active = true } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

@@ -1498,7 +1498,7 @@ function clearProtectedModuleState(){
   _protectedDataEpoch++;
   acctAccounts=[];acctVouchers=[];acctVoucherTemplates=[];acctTaxInvoices=[];acctPartners=[];acctPayments=[];acctRcpsIssuances=[];acctFixedAssets=[];_acctLoaded=false;
   _faDetail=null;_faDetailId=null;_rcpsDetail=null;_rcpsDetailId=null;_vatReportData=null;
-  erpItems=[];erpLocations=[];erpQuotations=[];erpPurchaseOrders=[];erpStock=[];erpPurchaseRequests=[];erpSalesTargets=[];_erpLoaded=false;_prLoaded=false;
+  erpItems=[];erpLocations=[];erpQuotations=[];erpPurchaseOrders=[];erpStock=[];erpPurchaseRequests=[];_erpLoaded=false;_prLoaded=false;
   _acctAccountsPicker=[];_acctAccountsPickerLoaded=false;_acctPartnersPicker=[];_acctPartnersPickerLoaded=false;
   pmsProjects=[];_pmsLoaded=false;
   recruitJobs=[];recruitCandidates=[];recruitInterviews=[];_recruitLoaded=false;_recruitLoadError="";_recruitLoadPromise=null;_recruitLastAttempt=0;
@@ -11960,7 +11960,7 @@ function adjustCompGrade(empId,year,newGrade,reason){
 }
 function adjustKpiGrade(empId,year,newGrade,reason){
   const emp=getEmp(empId);if(!emp)return;
-  const oldGrade=(emp.gradeResults||{})[str(year)]?.grade||"-";
+  const oldGrade=(emp.gradeResults||{})[String(year)]?.grade||"-";
   // employees[].updatedAt을 반드시 함께 갱신해야 한다 — 서버(_persistDataLocked)의 employees
   // upsert는 "newTs > oldTs(엄격 부등호)"일 때만 UPDATE를 실행하므로, updatedAt이 그대로면
   // Postgres 모드에서는 이 저장이 통째로 조용히 스킵되어 등급 조정이 영구히 반영되지 않는다
@@ -25088,7 +25088,6 @@ async function savePmsProject(id){
 }
 async function closePmsProject(id){
   const p=pmsProjects.find(project=>project.id===id);
-  const allocations=pmsAllocations.filter(a=>String(a.projectId)===String(id)).length;
   const worklogs=(typeof _pmsAllocWorklogs!=="undefined"?_pmsAllocWorklogs:[]).filter(w=>String(w.projectId)===String(id)).length;
   const ok=await askConfirmModal({
     title:"PMS 프로젝트 종료 확인",
@@ -25097,7 +25096,6 @@ async function closePmsProject(id){
       {label:"프로젝트",value:p?.name||id},
       {label:"PM",value:p?.pmId?getEmpName(p.pmId):(p?.pm||"-")},
       {label:"투입 인원",value:`${(p?.members||[]).length}명`},
-      {label:"투입률 기록",value:`${allocations}건`,tone:allocations?"warn":"info"},
       {label:"종료 후 영향",value:"수정/투입 관리 제한",tone:"danger"}
     ],
     warnings:worklogs?[`현재 로컬에 이 프로젝트 업무기록 ${worklogs}건이 로드되어 있습니다.`]:[],
