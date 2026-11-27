@@ -2517,8 +2517,10 @@ def get_lowprice_settings():
     return {**DEFAULT_PARAMS, **saved}
 
 @app.post("/stock/lowprice/settings")
-def save_lowprice_settings(req: LowPriceSettingsRequest):
-    """저평가 저가주 스크리닝 기준을 앱 내에서 저장 — 이후 채팅에서 별도 조건을 명시하지 않으면 이 값을 사용"""
+def save_lowprice_settings(req: LowPriceSettingsRequest, request: Request):
+    """저평가 저가주 스크리닝 기준을 앱 내에서 저장 — 이후 채팅에서 별도 조건을 명시하지 않으면 이 값을 사용.
+    저장된 기준은 모든 사용자의 스크리닝 결과에 영향을 주므로 관리자 토큰이 필요하다."""
+    _require_admin_request(request)
     params = {k: v for k, v in req.dict().items() if v is not None}
     if not params:
         raise HTTPException(400, "변경할 값이 없습니다")

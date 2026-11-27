@@ -691,7 +691,7 @@ async def chat_stream(
                 await asyncio.sleep(1)
                 continue
             else:
-                yield f"\n⚠️ 일시적인 연결 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+                yield "\n⚠️ 일시적인 연결 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
                 return
 
 

@@ -958,7 +958,7 @@ pip install httpx python-dotenv
 ### .env 파일
 ```env
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxx
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 ### 스트리밍 구현
@@ -973,7 +973,7 @@ async def groq_stream(
     system_prompt: str = "당신은 도움이 되는 AI 어시스턴트입니다.",
 ) -> AsyncGenerator[str, None]:
     api_key = os.getenv("GROQ_API_KEY")
-    model   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
     payload = {
         "model": model,

@@ -5,7 +5,7 @@ knowledge_payroll.py로 통합하는 스크립트.
 
 ai/ 디렉토리에서 실행: python3 create_payroll_kb.py
 """
-import os, glob, ast, importlib.util
+import os, ast, importlib.util
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(BASE_DIR, "knowledge_payroll.py")

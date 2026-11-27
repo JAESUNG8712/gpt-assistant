@@ -104,7 +104,7 @@ def fetch_all_alerts() -> list[dict]:
 
     items = _extract_items(data)
     if not items:
-        print(f"  ⚠️  응답에서 항목을 찾지 못함 — 원본 구조:")
+        print("  ⚠️  응답에서 항목을 찾지 못함 — 원본 구조:")
         print(f"     {json.dumps(data, ensure_ascii=False)[:1000]}")
         return []
 

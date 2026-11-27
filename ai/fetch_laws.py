@@ -176,8 +176,8 @@ def main():
         # 연결 실패 시 기존 캐시 유지 (워크플로우는 성공으로 종료)
         print("\n⚠️  law.go.kr 연결 실패 또는 결과 없음")
         print("   → 기존 캐시 유지 (로컬 KB로 동작)")
-        print(f"   힌트: GitHub Actions / Railway 서버에서 law.go.kr 접속이")
-        print(f"         차단된 경우 방법 1(로컬 KB)이 대신 사용됩니다.")
+        print("   힌트: GitHub Actions / Railway 서버에서 law.go.kr 접속이")
+        print("         차단된 경우 방법 1(로컬 KB)이 대신 사용됩니다.")
         sys.exit(0)  # 실패가 아닌 경고로 처리 — 워크플로우 green 유지
 
 

@@ -87,7 +87,7 @@ async def run_analysis(
     from main import _require_admin_request
     _require_admin_request(http_request, token)
 
-    global _analysis_running, _last_report, _last_run
+    global _analysis_running
 
     if _analysis_running:
         raise HTTPException(status_code=429, detail="분석이 이미 실행 중입니다. 잠시 후 시도하세요.")

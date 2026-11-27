@@ -228,7 +228,7 @@ async def schedule_reports(target_stocks: Optional[List[str]] = None):
         )
 
     scheduler.start()
-    print(f"\n🔄 스케줄러 실행 중... (Ctrl+C로 종료)\n")
+    print("\n🔄 스케줄러 실행 중... (Ctrl+C로 종료)\n")
 
     try:
         while True:

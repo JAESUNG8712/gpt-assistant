@@ -2835,11 +2835,17 @@
     if (Object.keys(body).length === 0) { showToast('⚠️ 값을 입력하세요'); return; }
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 저장 중...'; }
     try {
-      const r = await fetch('/stock/lowprice/settings', {
+      // 저장은 관리자 토큰(X-Admin-Token 헤더)이 필요하다. 401이면 토큰을 다시 입력받아 1회 재시도.
+      const send = (tok) => fetch('/stock/lowprice/settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': tok },
         body: JSON.stringify(body),
       });
+      let r = await send(getAdminToken());
+      if (r.status === 401) {
+        const retry = getAdminToken(true);
+        if (retry) r = await send(retry);
+      }
       if (!r.ok) throw new Error();
       showToast('✅ 스크리닝 기준 저장 완료');
     } catch(e) {

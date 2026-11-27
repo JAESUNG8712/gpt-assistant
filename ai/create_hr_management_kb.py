@@ -6,7 +6,6 @@ knowledge_hr_management.py로 통합하는 스크립트.
 ai/ 디렉토리에서 실행: python3 create_hr_management_kb.py
 """
 import os
-import glob
 import ast
 import importlib.util
 
