@@ -43,8 +43,7 @@ test.describe("작업6 — companies.status 정지(suspended) 클라이언트 UX
 
     // 정상 로그인 직후 startServerAutoSave()가 이미 실행돼 자동저장 타이머가 돌고 있어야
     // "정지 감지 후 멈춘다"는 전후 비교가 의미를 가진다.
-    const timerBefore = await page.evaluate(() => _serverAutoSaveTimer);
-    expect(timerBefore).not.toBeNull();
+    await expect.poll(() => page.evaluate(() => _serverAutoSaveTimer), { timeout: 10000 }).not.toBeNull();
 
     await page.route("**/save", (route) =>
       route.fulfill({ status: 403, contentType: "application/json", body: SUSPENDED_BODY })

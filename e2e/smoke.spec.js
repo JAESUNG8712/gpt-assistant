@@ -538,6 +538,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.evaluate(() => {
       autoSaveDebounced = () => {};
       loadFromServer = async () => {};
+      loadAccountingFromServer = async () => {};
       connectSSE = async () => {};
     });
     await page.click(".login-card button.btn-primary");
