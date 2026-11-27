@@ -2564,6 +2564,52 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.type !== "kpi" && rec.type !== "comp") return false;
     const reason = typeof rec.reason === "string" ? rec.reason.trim() : "";
     if (!reason || reason.length > 300) return false;
+  } else if (field === "successionPlans") {
+    // 핵심직무 승계계획: 계획 유형·중요도·위험도 enum, 제목 필수, 후보 준비도 enum.
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if (!["position", "job", "incumbent"].includes(rec.planType || "position")) return false;
+    if (!["high", "medium", "low"].includes(rec.criticality || "high")) return false;
+    if (!["high", "medium", "low"].includes(rec.riskOfLoss || "medium")) return false;
+    if (!["high", "medium", "low"].includes(rec.impactOfLoss || "medium")) return false;
+    if (!["active", "inactive"].includes(rec.status || "active")) return false;
+    if (rec.targetDate && !_validCalendarDate(rec.targetDate)) return false;
+    if (rec.candidates != null) {
+      if (!Array.isArray(rec.candidates) || rec.candidates.length > 50) return false;
+      for (const c of rec.candidates) {
+        if (!c || !c.empId) return false;
+        if (!["ready_now", "years_1_2", "years_3_plus"].includes(c.readiness || "years_3_plus")) return false;
+        if (!["high", "medium", "low"].includes(c.riskOfLoss || "medium")) return false;
+        if (c.rank != null && (!Number.isInteger(Number(c.rank)) || Number(c.rank) < 1 || Number(c.rank) > 50)) return false;
+      }
+    }
+  } else if (field === "jobSkillProfiles") {
+    // 직무별 요구 스킬: 수준 1~5 정수, 가중치 0 초과 10 이하, 스킬명 중복 금지.
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if (!["active", "inactive"].includes(rec.status || "active")) return false;
+    if (!Array.isArray(rec.skills) || rec.skills.length < 1 || rec.skills.length > 100) return false;
+    const names = new Set();
+    for (const sk of rec.skills) {
+      if (!sk || typeof sk.name !== "string" || !sk.name.trim() || sk.name.length > 80) return false;
+      if (!Number.isInteger(Number(sk.level)) || Number(sk.level) < 1 || Number(sk.level) > 5) return false;
+      const w = sk.weight == null ? 1 : Number(sk.weight);
+      if (!Number.isFinite(w) || w <= 0 || w > 10) return false;
+      const key = sk.name.trim().toLowerCase();
+      if (names.has(key)) return false;
+      names.add(key);
+    }
+  } else if (field === "employeeSkillProfiles") {
+    // 직원 검증 스킬: 대상 직원 필수, 수준 1~5 정수, 스킬명 중복 금지, 근거 길이 제한.
+    if (!rec.empId) return false;
+    if (!Array.isArray(rec.skills) || rec.skills.length < 1 || rec.skills.length > 100) return false;
+    const names = new Set();
+    for (const sk of rec.skills) {
+      if (!sk || typeof sk.name !== "string" || !sk.name.trim() || sk.name.length > 80) return false;
+      if (!Number.isInteger(Number(sk.level)) || Number(sk.level) < 1 || Number(sk.level) > 5) return false;
+      if (sk.evidence != null && (typeof sk.evidence !== "string" || sk.evidence.length > 300)) return false;
+      const key = sk.name.trim().toLowerCase();
+      if (names.has(key)) return false;
+      names.add(key);
+    }
   } else if (field === "okrObjectives") {
     // OKR(Epic C): 핵심지표(KR)의 targetValue/currentValue는 진행률(currentValue/targetValue)
     // 계산에 직접 쓰이므로 숫자 범위를 검증한다. 댓글·첨부파일도 개수 상한을 둔다.
