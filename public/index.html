@@ -9834,7 +9834,9 @@ async function submitHRForm(){
     const cr=await serverRequest("POST",`/api/recruit/candidates/${convertingCandId}/convert`,{employeeId:newEmp.id});
     if(cr?.ok){
       const idx=recruitCandidates.findIndex(c=>c.id===convertingCandId);if(idx>=0)recruitCandidates[idx]=cr.candidate;
-      showToast(`${newEmp.name} 님이 등록되고, 지원자 상태가 "입사"로 전환되었습니다.`,"success");
+      const obStarted=_autoStartOnboardingForHire(newEmp,convertingCandId);
+      if(obStarted)await _doSave(true).catch(()=>{});
+      showToast(`${newEmp.name} 님이 등록되고, 지원자 상태가 "입사"로 전환되었습니다.${obStarted?" 온보딩 절차도 자동으로 시작했습니다.":""}`,"success");
     }else{
       showToast(`${newEmp.name} 님(사번 ${newEmp.empNo})은 등록되었으나 지원자 상태 전환에 실패했습니다: ${cr?.message||"알 수 없는 오류"} — 지원자 관리 화면에서 직접 확인해주세요.`,"error");
     }
@@ -23428,7 +23430,7 @@ function renderOnboardingPage(){
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span>${fl.type==="onboard"?"🟢":"🔴"}</span>
         <strong>${h(fl.empName)}</strong>
-        <span class="fz12 text-gray">${fl.type==="onboard"?"온보딩":"오프보딩"} · 시작 ${h((fl.createdAt||"").slice(0,10))}${fl.completedAt?` · 완료 ${h(fl.completedAt.slice(0,10))}`:""}</span>
+        <span class="fz12 text-gray">${fl.type==="onboard"?"온보딩":"오프보딩"}${fl.sourceCandidateId?" · 채용 전환":""} · 시작 ${h((fl.createdAt||"").slice(0,10))}${fl.completedAt?` · 완료 ${h(fl.completedAt.slice(0,10))}`:""}</span>
         <div style="flex:1;min-width:120px;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden"><div style="width:${pct}%;height:100%;background:${pct===100?"#16a34a":"#3b82f6"}"></div></div>
         <span class="fz12 fw7">${done}/${total}</span>
         <button class="btn btn-secondary btn-sm" onclick="openOnboardDetailModal('${fl.id}')">체크리스트</button>
@@ -23437,6 +23439,16 @@ function renderOnboardingPage(){
     </div></div>`;
   }).join(""):`<div class="p-empty">진행 중인 절차가 없습니다. 상단 버튼으로 시작하세요.</div>`}
   </div></div>`;
+}
+// 지원자→직원 전환이 성공하면 신규 입사자의 온보딩 체크리스트를 자동으로 연다.
+// 이미 진행 중인 온보딩이 있으면 중복 생성하지 않고, 온보딩 메뉴를 개인적으로 끈
+// 관리자는 절차를 만들지 않는다(서버도 같은 권한으로 onboardingFlows 쓰기를 게이팅).
+function _autoStartOnboardingForHire(emp,candidateId){
+  if(!emp||(currentUser?.menuPerms||{})["onboarding"]===false)return false;
+  if(onboardingFlows.some(f=>String(f.empId)===String(emp.id)&&f.type==="onboard"&&!f.completedAt))return false;
+  const now=new Date().toISOString();
+  onboardingFlows.push({id:genId(),empId:emp.id,empName:emp.name,type:"onboard",items:ONBOARD_TEMPLATE.map(label=>({label,done:false})),sourceCandidateId:String(candidateId||""),createdAt:now,createdBy:currentUser.name,updatedAt:now});
+  return true;
 }
 function openOnboardCreateModal(type){
   const existIds=new Set(onboardingFlows.filter(f=>!f.completedAt&&f.type===type).map(f=>String(f.empId)));
